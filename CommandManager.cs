@@ -5,7 +5,7 @@ namespace OpenPrefirePrac
         public static void RegisterCommand(OpenPrefirePrac plugin)
         {
             // Define the command
-            var commandDefinition = new CommandDefinition("css_prefire", "Open Prefire Prac main menu", (player, commandInfo) =>
+            var commandDefinition = new CommandDefinition("css_cst", "Open CS Trainer main menu", (player, commandInfo) =>
             {
                 // Validate if the command is player-based
                 if (player == null)
@@ -126,7 +126,7 @@ namespace OpenPrefirePrac
 
         public static void UnregisterCommand(OpenPrefirePrac plugin)
         {
-            CommandManager.UnregisterCommand("css_prefire");
+            CommandManager.UnregisterCommand("css_cst");
         }
     }
 }
