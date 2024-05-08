@@ -12,16 +12,21 @@ using System.Text.Json;
 using CounterStrikeSharp.API.Core.Commands;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Entities;
+using static OpenPrefirePrac.Utils.Helpers;
+using static OpenPrefirePrac.CommandManager;
+using static OpenPrefirePrac.Managers;
 
 namespace OpenPrefirePrac;
 
 public class OpenPrefirePrac : BasePlugin
 {
+    // Module Metadata
     public override string ModuleName => "Open Prefire Prac";
     public override string ModuleVersion => "0.1.32";
     public override string ModuleAuthor => "Lengran";
     public override string ModuleDescription => "A plugin for practicing prefire in CS2. https://github.com/lengran/OpenPrefirePrac";
 
+    // Store player statuses and practice data
     private readonly Dictionary<CCSPlayerController, PlayerStatus> _playerStatuses = new();
     
     private readonly Dictionary<CCSPlayerController, CCSPlayerController> _ownerOfBots = new();       // Map: bots -> owners.
@@ -51,88 +56,48 @@ public class OpenPrefirePrac : BasePlugin
     private CommandDefinition ?_command;
 
     private CounterStrikeSharp.API.Modules.Timers.Timer ?_timerBroadcastProgress;
-    
+
+    private PlayerManager? _playerManager;
+    private BotManager? _botManager;
+
+    // Load and Unload
     public override void Load(bool hotReload)
     {
-        _playerCount = 0;
-
+        // Initialize player statuses and translator
+        var playerStatuses = new Dictionary<CCSPlayerController, PlayerStatus>();
         _translator = new Translator(Localizer, ModuleDirectory, CultureInfo.CurrentCulture.Name);
-        
-	    Console.WriteLine("[OpenPrefirePrac] Registering listeners.");
-        RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServerHandler);
-        RegisterListener<Listeners.OnMapStart>(OnMapStartHandler);
 
-        LoadDefaultSettings();
+        // Initialize player and bot managers
+        _playerManager = new PlayerManager(playerStatuses, _translator);
+        _botManager = new BotManager(_ownerOfBots);
 
+        // Register event listeners
+        RegisterEventListeners();
+
+        // Handle hot reload case to maintain plugin state
         if (hotReload)
         {
-            // Clear status registers
-            _ownerOfBots.Clear();
-            _practiceNameToId.Clear();
-            _practiceEnabled.Clear();
-            _practices.Clear();
-            _availableMaps.Clear();
-            _mapName = "";
-            _playerCount = 0;
-            _playerStatuses.Clear();
-            _botRequests.Clear();
-            
-            // Clear saved convars
-            _serverStatus.WarmupStatus = false;
-            _serverStatus.BoolConvars.Clear();
-            _serverStatus.IntConvars.Clear();
-            _serverStatus.FloatConvars.Clear();
-            _serverStatus.StringConvars.Clear();
-
-            // Setup map
-            OnMapStartHandler(Server.MapName);
-            
-            // Setup players
-            var players = Utilities.GetPlayers();
-            foreach (var tempPlayer in players)
-            {
-                if (tempPlayer == null || tempPlayer.IsBot || tempPlayer.IsHLTV)
-                {
-                    continue;
-                }
-
-                OnClientPutInServerHandler(tempPlayer.Slot);    
-            }
+            ClearAllStates();
+            SetupPlayersAndMap();
         }
 
+        // Register the main command for the plugin
         RegisterCommand();
 
-        if (_timerBroadcastProgress == null)
-        {
-            _timerBroadcastProgress = AddTimer(3f, () => PrintProgress(), TimerFlags.REPEAT);
-        }
+        // Initialize and start the timer to broadcast progress updates
+        SetupProgressTimer();
     }
 
     public override void Unload(bool hotReload)
     {
-        UnregisterCommand();
+        CommandManager.UnregisterCommand(this);
 
         if (hotReload)
         {
-            // Clear status registers
-            _ownerOfBots.Clear();
-            _practiceNameToId.Clear();
-            _practiceEnabled.Clear();
-            _practices.Clear();
-            _availableMaps.Clear();
-            _mapName = "";
-            _playerCount = 0;
-            _playerStatuses.Clear();
-            _botRequests.Clear();
-            
-            // Clear saved convars
-            _serverStatus.WarmupStatus = false;
-            _serverStatus.BoolConvars.Clear();
-            _serverStatus.IntConvars.Clear();
-            _serverStatus.FloatConvars.Clear();
-            _serverStatus.StringConvars.Clear();
+            ClearAllStates();
         }
 
+        // Stop and clear progress timer
         if (_timerBroadcastProgress != null)
         {
             _timerBroadcastProgress.Kill();
@@ -140,115 +105,259 @@ public class OpenPrefirePrac : BasePlugin
         }
     }
 
-    // TODO: Figure out if we can use the GameEventHandler attribute here instead
-    // [GameEventHandler]
+    // Register event listeners
+    private void RegisterEventListeners()
+    {
+        RegisterListener<Listeners.OnClientPutInServer>(OnClientPutInServerHandler);
+        RegisterListener<Listeners.OnMapStart>(OnMapStartHandler);
+    }
+
+
+
+    // Initialize translator
+    private void InitializeTranslator()
+    {
+        _translator = new Translator(Localizer, ModuleDirectory, CultureInfo.CurrentCulture.Name);
+    }
+
+    // Initialize and start the timer to bradcast progress updates
+    private void SetupProgressTimer()
+    {
+        if (_timerBroadcastProgress == null)
+        {
+            _timerBroadcastProgress = AddTimer(3f, () => PrintProgress(), TimerFlags.REPEAT);
+        }
+    }
+
+
+
+    // Clear all states during hot reload
+    private void ClearAllStates()
+    {
+        _ownerOfBots.Clear();
+        _practiceNameToId.Clear();
+        _practiceEnabled.Clear();
+        _practices.Clear();
+        _availableMaps.Clear();
+        _mapName = "";
+        _playerCount = 0;
+        _playerStatuses.Clear();
+        _botRequests.Clear();
+        _serverStatus.WarmupStatus = false;
+        _serverStatus.BoolConvars.Clear();
+        _serverStatus.IntConvars.Clear();
+        _serverStatus.FloatConvars.Clear();
+        _serverStatus.StringConvars.Clear();
+    }
+
+    // Setup players and map based on hot reload
+    private void SetupPlayersAndMap()
+    {
+        OnMapStartHandler(_serverGameRules.MapName);
+
+        var players = Utilities.GetPlayers();
+        foreach (var tempPlayer in players)
+        {
+            if (tempPlayer == null || tempPlayer.IsBot || tempPlayer.IsHLTV)
+            {
+                continue;
+            }
+
+            OnClientPutInServerHandler(tempPlayer.Slot);
+        }
+    }
+
+    // Called when a client connects to the server
+    [GameEventHandler]
     public void OnClientPutInServerHandler(int slot)
     {
-        var player = new CCSPlayerController(NativeAPI.GetEntityFromIndex(slot + 1));
+        // Retrieve the player object using the slot index
+        var player = GetPlayerFromSlot(slot);
 
-        if (player == null || !player.IsValid || player.IsHLTV)
+        // Check if the player object is valid and not a spectator
+        if (!_playerManager!.IsValidPlayer(player))
+        {
+            return;
+        }
+
+        // Handle bots differently from human players
+        if (player.IsBot)
+        {
+            HandleBot(player);
+        }
+        else
+        {
+            // Add a human player to the player manager with default settings
+            _playerManager.AddPlayer(player, new PlayerStatus(_defaultPlayerSettings!));
+        }
+    }
+
+    // Simplified bot handling function
+    private void HandleBot(CCSPlayerController bot)
+    {
+        if (_playerCount > 0 && !_ownerOfBots.ContainsKey(bot))
+        {
+            if (_botRequests.Count > 0)
+            {
+                // Retrieve the next player with pending bot requests
+                var tmpPlayerNumBots = _botRequests.FirstOrDefault();
+                if (tmpPlayerNumBots.Value == 1)
+                {
+                    _botRequests.Remove(tmpPlayerNumBots.Key);
+                }
+                else
+                {
+                    _botRequests[tmpPlayerNumBots.Key]--;
+                }
+
+                // Assign the bot to this player
+                _playerStatuses[tmpPlayerNumBots.Key].Bots.Add(bot);
+                _botManager!.AssignBotOwner(bot, tmpPlayerNumBots.Key);
+                Log($"[OpenPrefirePrac] Bot {bot.PlayerName}, slot: {bot.Slot} has been spawned.");
+            }
+            else
+            {
+                // Kick the bot if no pending requests exist
+                _botManager!.KickBot(bot);
+            }
+        }
+    }
+
+    // Called when a client connects to the server
+    [GameEventHandler]
+    public void OnClientPutInServerHandler(int slot)
+    {
+        var player = GetPlayerFromSlot(slot);
+
+        // Exit early if the player is invalid
+        if (!IsValidPlayer(player))
         {
             return;
         }
 
         if (player.IsBot)
         {
-            // For bots: If someone is practicing and it's an unmanaged bot, add or kick the bot
-            if (_playerCount > 0 && !_ownerOfBots.ContainsKey(player))
-            {
-                if (_botRequests.Count > 0)
-                {
-                    // Update requests (move this to the begining of this block)
-                    var tmpPlayerNumBots = _botRequests.FirstOrDefault();
-                    if (tmpPlayerNumBots.Value == 1)
-                    {
-                        _botRequests.Remove(tmpPlayerNumBots.Key);
-                    }
-                    else
-                    {
-                        _botRequests[tmpPlayerNumBots.Key]--;
-                    }
-
-                    // Put this bot under management
-                    _playerStatuses[tmpPlayerNumBots.Key].Bots.Add(player);
-                    _ownerOfBots.Add(player, tmpPlayerNumBots.Key);
-                    Console.WriteLine($"[OpenPrefirePrac] Bot {player.PlayerName}, slot: {player.Slot} has been spawned.");
-                }
-                else
-                {
-                    // Already have enough bots, kick this bot.
-                    KickBot(player);
-                }
-            }
+            HandleBot(player);
         }
         else
         {
-            // For players:
-            _playerStatuses.Add(player, new PlayerStatus(_defaultPlayerSettings!));
-
-            // Record player language
-            _translator!.RecordPlayerCulture(player);
+            HandleHumanPlayer(player);
         }
     }
 
+    // Retrieves a player object using the slot index.
+    private CCSPlayerController? GetPlayerFromSlot(int slot)
+    {
+        return new CCSPlayerController(NativeAPI.GetEntityFromIndex(slot + 1));
+    }
+
+    // Determines if the given player object is valid, not null, and not a spectator.
+    private bool IsValidPlayer(CCSPlayerController? player)
+    {
+        return player != null && player.IsValid && !player.IsHLTV;
+    }
+
+    // Handles the player setup for human players.
+    private void HandleHumanPlayer(CCSPlayerController player)
+    {
+        _playerStatuses.Add(player, new PlayerStatus(_defaultPlayerSettings!));
+        _translator!.RecordPlayerCulture(player);
+    }
+
+    // Called when a player disconnects
     [GameEventHandler]
     public HookResult OnPlayerDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
     {
+        // Retrieve the player object based on the event
         var player = @event.Userid;
 
+        // If the player object is null, log a message and continue
         if (player == null)
         {
-            // Console.WriteLine("[OpenPrefirePrac] OnPlayerDisconnect doesn't work now. Player = null.");
+            Console.WriteLine("[OpenPrefirePrac] OnPlayerDisconnect: Player is null.");
             return HookResult.Continue;
         }
 
+        // If the player is not tracked in the player status dictionary, continue
         if (!_playerStatuses.ContainsKey(player))
+        {
             return HookResult.Continue;
+        }
 
-        if (_playerStatuses[player].PracticeIndex != -1)
+        // Exit prefire mode if the player is currently in a practice session
+        if (IsInPrefireMode(player))
         {
             ExitPrefireMode(player);
         }
 
-        // Release resources(practices, targets, bots...)
-        _playerStatuses.Remove(player);
-        if (_botRequests.ContainsKey(player))
-        {
-            _botRequests.Remove(player);
-        }
+        // Perform final resource cleanup for this player
+        CleanupPlayerResources(player);
 
         return HookResult.Continue;
     }
 
+    // Helper function to determine if a player is in prefire mode
+    private bool IsInPrefireMode(CCSPlayerController player)
+    {   
+        return _playerStatuses[player].PracticeIndex != -1;
+    }
+
+    // Helper function to release resources associated with a player
+    private void CleanupPlayerResources(CCSPlayerController player)
+    {
+        // Remove the player from the statuses dictionary
+        _playerStatuses.Remove(player);
+
+        // Clear any pending bot requests made by this player
+        if (_botRequests.ContainsKey(player))
+        {
+            _botRequests.Remove(player);
+        }
+    }
+
     public void OnMapStartHandler(string map)
     {
+        // Set the active map name
         _mapName = map;
 
-        // load practices available in current map, from corresponding map directory.
-        _availableMaps.Clear();
-        var mapDirectories = new List<string>(Directory.EnumerateDirectories(ModuleDirectory + "/maps"));
-        var found = false;
-        for (var i = 0; i < mapDirectories.Count; i++)
+        // Discover available practice maps
+        if (DiscoverAivailableMaps())
         {
-            var mapPath = mapDirectories[i].Substring(mapDirectories[i].LastIndexOf(Path.DirectorySeparatorChar) + 1);
-            // Console.WriteLine($"[OpenPrefirePrac] Map folder for map {mapPath} found.");
-            _availableMaps.Add(mapPath);
-
-            if (mapPath.Equals(_mapName))
-            {
-                found = true;
-                Console.WriteLine("[OpenPrefirePrac] Map folder for current map found.");
-            }
-        }
-
-        if (found)
-        {
-            LoadPractice();
+            Console.WriteLine("[OpenPrefirePrac] Map folder for current map found.");
+            LoadPractice(); // Load the practice for the current map
         }
         else
         {
-            Console.WriteLine("[OpenPrefirePrac] Failed to load practices on map " + _mapName);
+            Console.WriteLine($"[OpenPrefirePrac] Failed to load practices on map {_mapName}");
         }
+    }
+
+    // Discover all available maps from the directory and check if the current map is included
+    private bool DiscoverAvailableMaps()
+    {
+        // Clear any previous map data
+        _availableMaps.Clear();
+
+        // Enumarate directories for all maps
+        var mapDirectories = new List<string>(Directory.EnumerateDirectories($"{ModuleDirectory}/maps"));
+
+        // Initialize a flag to identify if the current map is found
+        bool isCurrentMapFound = false;
+
+        // Iterate through all map directories and extract the map names
+        foreach (var directory in mapDirectories)
+        {
+            var mapPath = directory.Substring(directory.LastIndexOf(Path.DirectorySeparatorChar) + 1);
+            _availableMaps.Add(mapPath); // Add map to the list of available maps
+
+            // Check if the current map matches the given map name
+            if (mapPath.Equals(_mapName, StringComparison.OrdinalIgnoreCase))
+            {
+                isCurrentMapFound = true; // Mark as found if the map matches the current one
+            }
+        }
+
+        return isCurrentMapFound;
     }
 
     [GameEventHandler]
@@ -440,12 +549,6 @@ public class OpenPrefirePrac : BasePlugin
                     });
                 }
             }
-            // else
-            // {
-            //     // For unmanaged bots, kick them.
-            //     Console.WriteLine($"[OpenPrefirePrac] Find an unmanaged bot ({playerOrBot.PlayerName}) dying, kick it.");
-            //     Server.ExecuteCommand($"bot_kick {playerOrBot.PlayerName}");
-            // }
         }
         else
         {
@@ -856,9 +959,33 @@ public class OpenPrefirePrac : BasePlugin
             var numTargets = (int)(_practices[practiceNo].SpawnRatio * _practices[practiceNo].Targets.Count);
             var rnd = new Random(DateTime.Now.Millisecond);
 
-            var numToRemove = _practices[practiceNo].Targets.Count - numTargets;
-            for (var i = 0; i < numToRemove; i++)
-                _playerStatuses[player].EnabledTargets.RemoveAt(rnd.Next(_playerStatuses[player].EnabledTargets.Count));
+            // Start with an empty list and populate it by skipping randomly
+            var enabledTargets = new List<Target>();
+            var remainingTargets = _practices[practiceNo].Targets.ToList();
+    
+            // Calculate the ratio to determine how many targets should be skipped
+            var skipRatio = (1 - _practices[practiceNo].SpawnRatio);
+            var numToSkip = remainingTargets.Count - numTargets;
+
+            foreach (var target in remainingTargets)
+            {
+                // Skip the target if we still need to skip more and a random value meets the condition
+                if (numToSkip > 0 && rnd.NextDouble() < skipRatio)
+                {
+                    numToSkip--;
+                    continue; // Skip this target
+                }       
+
+                // Add the target to the enabled targets
+                enabledTargets.Add(target);
+
+                // Stop if we have enough targets
+                if (enabledTargets.Count == numTargets)
+                break;
+            }
+
+            // Update the player's enabled targets
+            _playerStatuses[player].EnabledTargets = enabledTargets;
         }
         // 1: Use all of the targets.
     }
@@ -1380,178 +1507,6 @@ public class OpenPrefirePrac : BasePlugin
 
         CommandManager.RemoveCommand(_command);
         _command = null;
-    }
-
-    private void RegisterCommand()
-    {
-        if (_command != null)
-        {
-            UnregisterCommand();
-        }
-
-        _command = new CommandDefinition("css_prefire", "Command to bring up the main menu of OpenPrefirePrac.", (player, commandInfo) => {
-            // This is a client only command
-            if (player == null)
-            {
-                return;
-            }
-
-            // Command shortcuts
-            if (commandInfo.ArgCount > 1)
-            {
-                switch (commandInfo.ArgByIndex(1))
-                {
-                    case "prac":
-                        int choice = 0;
-                        if (int.TryParse(commandInfo.ArgByIndex(2), out choice) && choice > 0 && choice <= _practices.Count)
-                        {
-                            StartPractice(player, choice - 1);
-                            return;
-                        }
-                        player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "practice.help", _practices.Count)}");
-                        return;
-                    case "map":
-                        string mapName = commandInfo.ArgByIndex(2);
-                        ChangeMap(player, mapName);
-                        return;
-                    case "df":
-                        int difficulty = 0;
-                        if (int.TryParse(commandInfo.ArgByIndex(2), out difficulty) && difficulty > 0 && difficulty <= 5)
-                        {
-                            ChangeDifficulty(player, 5 - difficulty);
-                            return;
-                        }
-                        player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "difficulty.help")}");
-                        return;
-                    case "mode":
-                        string trainingMode = commandInfo.ArgByIndex(2);
-                        switch (trainingMode)
-                        {
-                            case "full":
-                                ChangeTrainingMode(player, 1);
-                                return;
-                            case "rand":
-                                ChangeTrainingMode(player, 0);
-                                return;
-                            default:
-                                player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "modemenu.help")}");
-                                return;
-                        }
-                    case "bw":
-                        string botWeapon = commandInfo.ArgByIndex(2);
-                        switch (botWeapon)
-                        {
-                            case "rand":
-                                SetBotWeapon(player, 0);
-                                return;
-                            case "ump":
-                                SetBotWeapon(player, 1);
-                                return;
-                            case "ak":
-                                SetBotWeapon(player, 2);
-                                return;
-                            case "sct":
-                                SetBotWeapon(player, 3);
-                                return;
-                            case "awp":
-                                SetBotWeapon(player, 4);
-                                return;
-                            default:
-                                player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "weaponmenu.help")}");
-                                return;
-                        }
-                    case "lang":
-                        string language = commandInfo.ArgByIndex(2);
-                        switch (language)
-                        {
-                            case "en":
-                                _translator!.UpdatePlayerCulture(player.SteamID, "EN");
-                                break;
-                            case "pt":
-                                _translator!.UpdatePlayerCulture(player.SteamID, "pt-BR");
-                                break;
-                            case "zh":
-                                _translator!.UpdatePlayerCulture(player.SteamID, "ZH");
-                                break;
-                            default:
-                                player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "languagemenu.help")}");
-                                return;
-                        }
-                        player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "languagemenu.set")}");
-                        return;
-                    case "exit":
-                        ForceStopPractice(player);
-                        return;
-                    case "help":
-                        player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "mainmenu.help", _practices.Count)}");
-                        return;
-                    // case "test":
-                    //     SetMoney(player, 0);
-                    //     AddTimer(5f, () => SetMoney(player, 123));
-                    //     return;
-                    default:
-                        player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "mainmenu.help", _practices.Count)}");
-                        break;
-                }
-            }
-
-            // Draw the menu
-            var mainMenu = new ChatMenu(_translator!.Translate(player, "mainmenu.title"));
-
-            // 1 Practice menu
-            mainMenu.AddMenuOption(_translator.Translate(player, "mainmenu.practice"), OnOpenPracticeMenu);
-
-            // 2 Map menu
-            mainMenu.AddMenuOption(_translator.Translate(player, "mainmenu.map"), OpenMapMenu);
-
-            // 3 Difficulty menu
-            string currentDifficulty = _translator.Translate(player, $"difficulty.{_playerStatuses[player].HealingMethod}");
-            mainMenu.AddMenuOption(_translator.Translate(player, "mainmenu.difficulty", currentDifficulty), OpenDifficultyMenu);
-            
-            // 4 Training mode menu
-            string currentTrainingMode = _translator.Translate(player, $"modemenu.{_playerStatuses[player].TrainingMode}");
-            mainMenu.AddMenuOption(_translator.Translate(player, "mainmenu.mode", currentTrainingMode), OpenModeMenu);
-
-            // 5 Bot weapon menu
-            string currentBotWeapon = "";
-            switch (_playerStatuses[player].BotWeapon)
-            {
-                case 0:
-                    currentBotWeapon = _translator!.Translate(player, "weaponmenu.random");
-                    break;
-                case 1:
-                    currentBotWeapon = "UMP-45";
-                    break;
-                case 2:
-                    currentBotWeapon = "AK47";
-                    break;
-                case 3:
-                    currentBotWeapon = "AWP";
-                    break;
-                default:
-                    break;
-            }
-            mainMenu.AddMenuOption(_translator!.Translate(player, "mainmenu.bot_weapon", currentBotWeapon), OpenBotWeaponMenu);
-
-            // 6 Language menu
-            mainMenu.AddMenuOption("Language preference", OpenLanguageMenu);
-
-            // 7 (Optional) End practicing button
-            if (_playerStatuses[player].PracticeIndex > 0)
-            {
-                mainMenu.AddMenuOption(_translator.Translate(player, "mainmenu.exit"), OnForceExitPrefireMode);
-            }
-
-            // 8 Close menu button.
-            mainMenu.AddMenuOption(_translator!.Translate(player, "mainmenu.close_menu"), OnCloseMenu);
-
-            player.PrintToChat("============ [OpenPrefirePrac] ============");
-            MenuManager.OpenChatMenu(player, mainMenu);
-            player.PrintToChat(_translator.Translate(player, "mainmenu.shortcut_prompt"));
-            player.PrintToChat("===========================================");
-        });
-
-        CommandManager.RegisterCommand(_command);
     }
 
     private void CloseCurrentMenu(CCSPlayerController player)
