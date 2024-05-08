@@ -14,7 +14,7 @@ using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Entities;
 using static OpenPrefirePrac.Utils.Helpers;
 using static OpenPrefirePrac.CommandManager;
-using static OpenPrefirePrac.Managers;
+using OpenPrefirePrac.Managers;
 
 namespace OpenPrefirePrac;
 
@@ -40,6 +40,8 @@ public class OpenPrefirePrac : BasePlugin
     private int _playerCount;
     
     private readonly List<PrefirePractice> _practices = new();
+
+    public List<PrefirePractice> Practices => _practices;
     
     private readonly List<string> _availableMaps = new();
 
@@ -49,11 +51,11 @@ public class OpenPrefirePrac : BasePlugin
     
     private Translator ?_translator;
 
+    public Translator? Translator => _translator;
+
     private readonly Dictionary<CCSPlayerController, int> _botRequests = new();         // make this thread-safe if necessary
 
     private DefaultConfig ?_defaultPlayerSettings;
-
-    private CommandDefinition ?_command;
 
     private CounterStrikeSharp.API.Modules.Timers.Timer ?_timerBroadcastProgress;
 
@@ -82,7 +84,7 @@ public class OpenPrefirePrac : BasePlugin
         }
 
         // Register the main command for the plugin
-        RegisterCommand();
+        RegisterCommand(this);
 
         // Initialize and start the timer to broadcast progress updates
         SetupProgressTimer();
@@ -90,7 +92,7 @@ public class OpenPrefirePrac : BasePlugin
 
     public override void Unload(bool hotReload)
     {
-        CommandManager.UnregisterCommand(this);
+        UnregisterCommand(this);
 
         if (hotReload)
         {
@@ -153,7 +155,7 @@ public class OpenPrefirePrac : BasePlugin
     // Setup players and map based on hot reload
     private void SetupPlayersAndMap()
     {
-        OnMapStartHandler(_serverGameRules.MapName);
+        OnMapStartHandler(Server.MapName);
 
         var players = Utilities.GetPlayers();
         foreach (var tempPlayer in players)
@@ -220,28 +222,6 @@ public class OpenPrefirePrac : BasePlugin
                 // Kick the bot if no pending requests exist
                 _botManager!.KickBot(bot);
             }
-        }
-    }
-
-    // Called when a client connects to the server
-    [GameEventHandler]
-    public void OnClientPutInServerHandler(int slot)
-    {
-        var player = GetPlayerFromSlot(slot);
-
-        // Exit early if the player is invalid
-        if (!IsValidPlayer(player))
-        {
-            return;
-        }
-
-        if (player.IsBot)
-        {
-            HandleBot(player);
-        }
-        else
-        {
-            HandleHumanPlayer(player);
         }
     }
 
@@ -321,7 +301,7 @@ public class OpenPrefirePrac : BasePlugin
         _mapName = map;
 
         // Discover available practice maps
-        if (DiscoverAivailableMaps())
+        if (DiscoverAvailableMaps())
         {
             Console.WriteLine("[OpenPrefirePrac] Map folder for current map found.");
             LoadPractice(); // Load the practice for the current map
@@ -582,7 +562,7 @@ public class OpenPrefirePrac : BasePlugin
         CloseCurrentMenu(player);
     }
 
-    public void OpenMapMenu(CCSPlayerController player, ChatMenuOption option)
+    public void OpenMapMenu(CCSPlayerController player)
     {
         var mapMenu = new ChatMenu(_translator!.Translate(player, "mapmenu.title"));
         foreach (var map in _availableMaps)
@@ -949,46 +929,44 @@ public class OpenPrefirePrac : BasePlugin
     {
         _playerStatuses[player].EnabledTargets.Clear();
         var practiceNo = _playerStatuses[player].PracticeIndex;
-        
-        for (var i = 0; i < _practices[practiceNo].Targets.Count; i++)
-            _playerStatuses[player].EnabledTargets.Add(i);
 
         if (_playerStatuses[player].TrainingMode == 0)
         {
             // 0: Use part of the targets.
-            var numTargets = (int)(_practices[practiceNo].SpawnRatio * _practices[practiceNo].Targets.Count);
+            var numTargets = 7;
             var rnd = new Random(DateTime.Now.Millisecond);
 
             // Start with an empty list and populate it by skipping randomly
-            var enabledTargets = new List<Target>();
+            var enabledTargets = new List<TargetBot>();
+            _playerStatuses[player].EnabledTargets.Clear();
             var remainingTargets = _practices[practiceNo].Targets.ToList();
-    
-            // Calculate the ratio to determine how many targets should be skipped
-            var skipRatio = (1 - _practices[practiceNo].SpawnRatio);
-            var numToSkip = remainingTargets.Count - numTargets;
+
+            // Calculate how many targets should be skipped
+            var totalTargets = remainingTargets.Count;
+            var numToSkip = totalTargets - numTargets;
 
             foreach (var target in remainingTargets)
             {
-                // Skip the target if we still need to skip more and a random value meets the condition
-                if (numToSkip > 0 && rnd.NextDouble() < skipRatio)
+                var remainingRequired = numTargets - enabledTargets.Count;
+                var remainingItems = totalTargets - enabledTargets.Count - numToSkip;
+
+                if (numToSkip > 0 && rnd.Next(remainingItems + numToSkip) < numToSkip)
                 {
                     numToSkip--;
-                    continue; // Skip this target
-                }       
+                    continue;
+                }
 
-                // Add the target to the enabled targets
                 enabledTargets.Add(target);
+                var targetIndex = _practices[practiceNo].Targets.IndexOf(target); // Get the index of the target
+                _playerStatuses[player].EnabledTargets.Add(targetIndex); // Add the index to EnabledTargets
 
-                // Stop if we have enough targets
                 if (enabledTargets.Count == numTargets)
-                break;
+                    break;
             }
-
-            // Update the player's enabled targets
-            _playerStatuses[player].EnabledTargets = enabledTargets;
         }
         // 1: Use all of the targets.
     }
+
 
     private void CreateGuidingLine(CCSPlayerController player)
     {
@@ -1392,7 +1370,7 @@ public class OpenPrefirePrac : BasePlugin
         _defaultPlayerSettings = new DefaultConfig(tmpDifficulty, tmpTrainingMode, tmpBotWeapon);
     }
 
-    private void StartPractice(CCSPlayerController player, int practiceIndex)
+    public void StartPractice(CCSPlayerController player, int practiceIndex)
     {
         if (_playerCount == 0)
         {
@@ -1458,7 +1436,7 @@ public class OpenPrefirePrac : BasePlugin
         player.PrintToCenter(_translator.Translate(player, "practice.begin"));
     }
 
-    private void ChangeMap(CCSPlayerController player, string mapName)
+    public void ChangeMap(CCSPlayerController player, string mapName)
     {
         // Check if the map has practice routes
         if (!_availableMaps.Contains(mapName))
@@ -1478,44 +1456,33 @@ public class OpenPrefirePrac : BasePlugin
         }
     }
 
-    private void ChangeDifficulty(CCSPlayerController player, int difficultyNo)
+    public void ChangeDifficulty(CCSPlayerController player, int difficultyNo)
     {
         _playerStatuses[player].HealingMethod = difficultyNo;
         var currentDifficulty = _translator!.Translate(player, $"difficulty.{difficultyNo}");
         player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "difficulty.set", currentDifficulty)}");
     }
 
-    private void ChangeTrainingMode(CCSPlayerController player, int trainingMode)
+    public void ChangeTrainingMode(CCSPlayerController player, int trainingMode)
     {
         _playerStatuses[player].TrainingMode = trainingMode;
         var currentTrainingMode = _translator!.Translate(player, $"modemenu.{trainingMode}");
         player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "modemenu.set", currentTrainingMode)}");
     }
 
-    private void ForceStopPractice(CCSPlayerController player)
+    public void ForceStopPractice(CCSPlayerController player)
     {
         ExitPrefireMode(player);
         player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White}{_translator!.Translate(player, "practice.exit")}");
     }
 
-    private void UnregisterCommand()
-    {
-        if (_command == null)
-        {
-            return;
-        }
-
-        CommandManager.RemoveCommand(_command);
-        _command = null;
-    }
-
-    private void CloseCurrentMenu(CCSPlayerController player)
+    public void CloseCurrentMenu(CCSPlayerController player)
     {
         MenuManager.CloseActiveMenu(player);
         player.PrintToChat($" {ChatColors.Green}[OpenPrefirePrac] {ChatColors.White} {_translator!.Translate(player, "mainmenu.menu_closed")}");
     }
 
-    private void SetBotWeapon(CCSPlayerController player, int botWeapon)
+    public void SetBotWeapon(CCSPlayerController player, int botWeapon)
     {
         _playerStatuses[player].BotWeapon = botWeapon;
 

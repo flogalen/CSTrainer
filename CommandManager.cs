@@ -1,11 +1,17 @@
+using CounterStrikeSharp.API.Core.Commands;
+using CounterStrikeSharp.API.Modules.Utils;
+
 namespace OpenPrefirePrac
 {
     public static class CommandManager
     {
+
+        private static CommandDefinition? commandDefinition;
+
         public static void RegisterCommand(OpenPrefirePrac plugin)
         {
             // Define the command
-            var commandDefinition = new CommandDefinition("css_cst", "Open CS Trainer main menu", (player, commandInfo) =>
+            commandDefinition = new CommandDefinition("css_cst", "Open CS Trainer main menu", (player, commandInfo) =>
             {
                 // Validate if the command is player-based
                 if (player == null)
@@ -117,16 +123,16 @@ namespace OpenPrefirePrac
                 }
 
                 // Draw the main menu usind methods from the plugin
-                plugin.OpenMainMenu(player);
+                plugin.OpenMapMenu(player);
             });
 
             // Register the command
-            CommandManager.RegisterCommand(commandDefinition);
+            plugin.CommandManager.RegisterCommand(commandDefinition);
         }
 
         public static void UnregisterCommand(OpenPrefirePrac plugin)
         {
-            CommandManager.UnregisterCommand("css_cst");
+            plugin.CommandManager.RemoveCommand(commandDefinition);
         }
     }
 }

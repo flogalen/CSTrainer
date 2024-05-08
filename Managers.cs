@@ -3,6 +3,8 @@ namespace OpenPrefirePrac.Managers
     using System.Collections.Generic;
     using CounterStrikeSharp.API.Modules.Entities;
     using CounterStrikeSharp.API.Modules.Utils;
+    using CounterStrikeSharp.API.Core;
+    using CounterStrikeSharp.API;
 
     public class PlayerManager
     {
